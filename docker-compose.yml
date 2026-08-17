@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+
+  bot:
+    build: .
+    image: hostbot:latest
+    container_name: hostbot
+    restart: unless-stopped
+
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      # Часовой пояс (по желанию)
+      - TZ=Europe/Moscow
+
+    volumes:
+      # Постоянное хранение БД
+      - ./data:/app/data
+      # Доступ к Docker-сокету хоста → бот управляет контейнерами-серверами
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    # Сам бот-контейнер: 256 МБ RAM, 0.5 vCPU
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: "0.5"
+
+    networks:
+      - hostbot_net
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  hostbot_net:
+    driver: bridge
