@@ -44,10 +44,40 @@ class DockerManager:
 
     # ── create ────────────────────────────────────────────────────────────────
 
+    def _ensure_isolated_network(self, server_id: int) -> str:
+        """Создаёт изолированную сеть для контейнера (без доступа к хосту и другим контейнерам)."""
+        net_name = f"hostbot_net_{server_id}"
+        try:
+            _client.networks.get(net_name)
+        except docker.errors.NotFound:
+            _client.networks.create(
+                net_name,
+                driver="bridge",
+                internal=True,          # нет выхода в интернет
+                attachable=False,
+                options={
+                    "com.docker.network.bridge.enable_icc":           "false",  # нет связи между контейнерами
+                    "com.docker.network.bridge.enable_ip_masquerade": "false",
+                },
+                labels={"hostbot.server_id": str(server_id)},
+            )
+        return net_name
+
     def provision(self, server_id: int, server_name: str):
         """
-        Создаёт volume + контейнер, не запуская его.
+        Создаёт volume + изолированный контейнер, не запуская его.
         Возвращает (container_id: str | None, error: str | None).
+
+        Политика изоляции:
+          • Изолированная bridge-сеть (internal=True, icc=false) — нет выхода в интернет,
+            нет связи с другими контейнерами.
+          • read_only=True для корневой ФС (только /app и /tmp доступны на запись).
+          • Все Linux capabilities сброшены (cap_drop=ALL).
+          • no-new-privileges — процесс не может повысить привилегии.
+          • Лимит процессов (pids_limit=30).
+          • Лимит файловых дескрипторов (nofile 256/512).
+          • Без доступа к устройствам хоста.
+          • Без привилегированного режима.
         """
         if not DOCKER_AVAILABLE:
             return f"sim_{server_id}", None
@@ -63,6 +93,13 @@ class DockerManager:
                 except docker.errors.APIError:
                     pass  # уже существует
 
+                # изолированная сеть
+                try:
+                    net_name = self._ensure_isolated_network(server_id)
+                except Exception as e:
+                    logger.warning("Не удалось создать изолированную сеть: %s — используем none", e)
+                    net_name = "none"
+
                 # container (уже существующий — отдаём его id)
                 try:
                     c = _client.containers.get(name)
@@ -74,12 +111,38 @@ class DockerManager:
                     image="python:3.11-slim",
                     name=name,
                     command="tail -f /dev/null",
+
+                    # ── ресурсы ──────────────────────────────────────────────
                     mem_limit="50m",
-                    memswap_limit="50m",
+                    memswap_limit="50m",          # swap = 0 (memswap == mem_limit)
                     cpu_quota=25_000,
                     cpu_period=100_000,
+                    pids_limit=30,                # не более 30 процессов
+
+                    # ── файловая система ─────────────────────────────────────
+                    read_only=True,               # корень только для чтения
                     volumes={vol: {"bind": "/app", "mode": "rw"}},
                     working_dir="/app",
+                    tmpfs={
+                        "/tmp": "size=16m,mode=1777",  # /tmp в оперативке, 16 МБ
+                    },
+
+                    # ── сеть ─────────────────────────────────────────────────
+                    network=net_name,
+
+                    # ── безопасность ─────────────────────────────────────────
+                    privileged=False,
+                    cap_drop=["ALL"],             # сброс всех capabilities
+                    security_opt=[
+                        "no-new-privileges:true", # нельзя повысить привилегии
+                        "seccomp=unconfined",     # совместимость (можно заменить профилем)
+                    ],
+                    ulimits=[
+                        docker.types.Ulimit(name="nofile", soft=256, hard=512),
+                        docker.types.Ulimit(name="nproc",  soft=30,  hard=30),
+                    ],
+
+                    # ── метаданные ───────────────────────────────────────────
                     labels={
                         "hostbot.server_id":   str(server_id),
                         "hostbot.server_name": server_name,
