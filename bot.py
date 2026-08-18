@@ -1,5 +1,5 @@
 """
-bot.py — HostBot v1.0 Beta
+bot.py — VaultHost v1.0
 Telegram-бот для управления хостингом (приватные чаты только).
 
 Запуск:
@@ -22,7 +22,8 @@ from docker_manager import docker_mgr
 
 BOT_TOKEN   = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID    = 5429363551
-BOT_VERSION = "1.0 Бета"
+TGWATCH_URL = os.environ.get("TGWATCH_URL", "")  # URL страницы статуса (опционально)
+BOT_VERSION = "1.0"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,7 +86,7 @@ MAINTENANCE_MSG = (
     "пожалуйста, немного подождите, мы стараемся завершить всё максимально быстро!\n\n"
     "⏰ Ориентировочное время восстановления: <b>скоро</b>\n\n"
     "💙 Благодарим вас за терпение и понимание!\n\n"
-    "<i>— Команда HostBot</i>"
+    "<i>— Команда VaultHost</i>"
 )
 
 
@@ -164,7 +165,7 @@ def _kb_main_menu():
         types.KeyboardButton("🖥 Серверы"),
         types.KeyboardButton("➕ Создать сервер"),
         types.KeyboardButton("👤 Профиль"),
-        types.KeyboardButton("ℹ️ Версия"),
+        types.KeyboardButton("📊 Статус сервиса"),
     )
     return kb
 
@@ -177,6 +178,7 @@ def _kb_server_manage(server_id: int):
     )
     mk.add(
         types.InlineKeyboardButton("🔄 Перезагрузить", callback_data=f"s_restart_{server_id}"),
+        types.InlineKeyboardButton("📊 Статистика",    callback_data=f"s_stats_{server_id}"),
     )
     mk.add(
         types.InlineKeyboardButton("📦 Загрузить ZIP", callback_data=f"s_zip_{server_id}"),
@@ -191,14 +193,17 @@ def _kb_server_manage(server_id: int):
 def _server_card(srv: dict) -> str:
     status = srv.get("status", "stopped")
     return (
-        f"⚙️ <b>Управление сервером</b>\n\n"
+        f"⚙️ <b>Управление сервером — VaultHost</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🖥 Имя:     <b>{srv['name']}</b>\n"
         f"📊 Статус:  <b>{_fmt_status(status)}</b>\n"
         f"🆔 ID:      <code>{srv['id']}</code>\n"
         f"📅 Создан:  {str(srv['created_at'])[:10]}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💾 Ресурсы: 50 МБ RAM · 0.25 vCPU"
+        f"💾 RAM:     50 МБ (лимит)\n"
+        f"⚡ CPU:     0.25 vCPU\n"
+        f"📁 Диск:    Docker Volume /app\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -229,7 +234,7 @@ def cmd_start(msg: types.Message):
     else:
         bot.send_message(
             cid,
-            "🌟 <b>Добро пожаловать в HostBot!</b>\n\n"
+            "🌟 <b>Добро пожаловать в VaultHost!</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             "🚀 Ваш персональный хостинг прямо в Telegram\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -284,12 +289,12 @@ def cmd_version(msg: types.Message):
     _typing(cid, 0.3)
     bot.send_message(
         cid,
-        f"🤖 <b>HostBot</b>\n\n"
+        f"🤖 <b>VaultHost</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 Версия:  <b>{BOT_VERSION}</b>\n"
         f"🔧 Статус:  <b>Бета-тестирование</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"✨ Спасибо, что используете HostBot!",
+        f"✨ Спасибо, что используете VaultHost!",
     )
 
 
@@ -333,6 +338,7 @@ def _show_profile(cid: int, uid: int, message_id: int = None):
     )
     mk = types.InlineKeyboardMarkup(row_width=1)
     mk.add(types.InlineKeyboardButton("❓ Частые вопросы", callback_data="faq_menu"))
+    mk.add(types.InlineKeyboardButton("📋 Правила сервиса", callback_data="rules"))
 
     if message_id:
         try:
@@ -467,6 +473,18 @@ def on_callback(call: types.CallbackQuery):
         _show_faq_item(cid, mid, data[4:], uid)
         return
 
+    # ── rules ────────────────────────────────────────────────────────────────
+    if data == "rules":
+        bot.answer_callback_query(call.id)
+        _show_rules(cid, mid)
+        return
+
+    # ── service status ───────────────────────────────────────────────────────
+    if data == "service_status":
+        bot.answer_callback_query(call.id)
+        _show_service_status(cid, mid)
+        return
+
     # ── server list ──────────────────────────────────────────────────────────
     if data == "s_list":
         bot.answer_callback_query(call.id)
@@ -503,6 +521,12 @@ def on_callback(call: types.CallbackQuery):
         server_id = int(data.split("_")[-1])
         bot.answer_callback_query(call.id, "⏳ Перезагружаю...")
         _do_server_action(cid, uid, server_id, "restart")
+        return
+
+    if data.startswith("s_stats_"):
+        server_id = int(data.split("_")[-1])
+        bot.answer_callback_query(call.id, "⏳ Получаю статистику...")
+        _do_server_stats(cid, uid, server_id)
         return
 
     if data.startswith("s_zip_"):
@@ -682,16 +706,75 @@ _FAQ = {
         "💰 <b>Начальный баланс:</b>\n"
         "Каждый новый пользователь получает <b>25 стартовых кредитов</b>."
     ),
+    "4": (
+        "🐢 <b>Что делать если сервер работает медленно?</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Медленная работа может быть вызвана несколькими причинами:\n\n"
+        "1️⃣ <b>Высокая нагрузка на платформу</b>\n"
+        "   → Подождите 5–10 минут и попробуйте снова.\n\n"
+        "2️⃣ <b>Ваш код потребляет много ресурсов</b>\n"
+        "   → Оптимизируйте код. Каждый сервер имеет лимит: <b>50 МБ RAM</b> и <b>0.25 vCPU</b>.\n\n"
+        "3️⃣ <b>Много одновременно запущенных серверов</b>\n"
+        "   → Остановите неиспользуемые серверы.\n\n"
+        "4️⃣ <b>Интенсивное использование диска</b>\n"
+        "   → Очистите временные файлы из <code>/app</code>.\n\n"
+        "📊 Нажмите <b>Статистика</b> в панели сервера чтобы увидеть реальное потребление.\n\n"
+        "💬 Если проблема не решена — обратитесь к администратору."
+    ),
+    "5": (
+        "🔧 <b>Что делать если хостинг на технических работах?</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "Если вы видите сообщение о технических работах:\n\n"
+        "⏳ <b>Ожидайте завершения</b>\n"
+        "   Тех. работы обычно длятся от нескольких минут до 1 часа.\n\n"
+        "📡 <b>Следите за статусом</b>\n"
+        "   Нажмите кнопку <b>📊 Статус сервиса</b> в главном меню — там актуальная информация.\n\n"
+        "🔔 <b>Уведомление</b>\n"
+        "   После окончания тех. работ вы сможете использовать бота в обычном режиме.\n\n"
+        "💡 <b>Ваши данные в безопасности</b>\n"
+        "   Все файлы на серверах сохраняются на Docker Volume — они не теряются при тех. работах.\n\n"
+        "💬 По срочным вопросам обращайтесь к администратору."
+    ),
 }
+
+
+_RULES_TEXT = (
+    "📋 <b>Правила сервиса VaultHost</b>\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "1️⃣  <b>Запрещённый контент</b>\n"
+    "🚫 Запрещено размещать вредоносное ПО, спам-боты, майнеры криптовалюты, "
+    "фишинговые скрипты и любой незаконный контент. "
+    "Нарушение — <b>немедленная блокировка без предупреждения.</b>\n\n"
+    "2️⃣  <b>Использование ресурсов</b>\n"
+    "⚡ Каждый сервер ограничен: <b>50 МБ RAM · 0.25 vCPU · 30 процессов.</b> "
+    "Запрещено намеренно нагружать платформу и использовать эксплойты для обхода лимитов. "
+    "Нарушение — блокировка аккаунта.\n\n"
+    "3️⃣  <b>Ответственность за код</b>\n"
+    "👤 Вы несёте полную ответственность за код, который запускаете на серверах. "
+    "VaultHost не несёт ответственности за последствия работы вашего ПО.\n\n"
+    "4️⃣  <b>Кредитная система</b>\n"
+    "💰 Кредиты — это ресурс платформы. "
+    "Списание происходит автоматически: <b>-1 кредит/час</b> за каждый работающий сервер. "
+    "При нулевом балансе серверы <b>останавливаются автоматически.</b> "
+    "Продажа, обмен и накрутка кредитов запрещены.\n\n"
+    "5️⃣  <b>Правила общения с поддержкой</b>\n"
+    "🤝 Общайтесь с администратором уважительно. "
+    "Запрещены угрозы, оскорбления и спам в адрес команды. "
+    "Чёткое и вежливое описание проблемы ускорит решение вашего вопроса.\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━\n"
+    "✅ Используя VaultHost, вы автоматически соглашаетесь с этими правилами."
+)
 
 
 def _faq_menu_kb():
     mk = types.InlineKeyboardMarkup(row_width=1)
     mk.add(
-        types.InlineKeyboardButton("🆓 Бесплатные серверы",  callback_data="faq_1"),
-        types.InlineKeyboardButton("💳 Платные тарифы",      callback_data="faq_2"),
-        types.InlineKeyboardButton("💡 Советы и лайфхаки",  callback_data="faq_3"),
-        types.InlineKeyboardButton("◀️ Назад в профиль",    callback_data="faq_profile"),
+        types.InlineKeyboardButton("🆓 Бесплатные серверы",         callback_data="faq_1"),
+        types.InlineKeyboardButton("💳 Платные тарифы",             callback_data="faq_2"),
+        types.InlineKeyboardButton("💡 Советы и лайфхаки",         callback_data="faq_3"),
+        types.InlineKeyboardButton("🐢 Сервер работает медленно",   callback_data="faq_4"),
+        types.InlineKeyboardButton("🔧 Хостинг на тех. работах",    callback_data="faq_5"),
+        types.InlineKeyboardButton("◀️ Назад в профиль",            callback_data="faq_profile"),
     )
     return mk
 
@@ -715,6 +798,123 @@ def _show_faq_item(cid: int, mid: int, key: str, uid: int):
         bot.edit_message_text(text, cid, mid, reply_markup=mk)
     except Exception:
         bot.send_message(cid, text, reply_markup=mk)
+
+
+# ─── rules ────────────────────────────────────────────────────────────────────
+
+def _show_rules(cid: int, mid: int = None):
+    mk = types.InlineKeyboardMarkup()
+    mk.add(types.InlineKeyboardButton("◀️ Назад в профиль", callback_data="faq_profile"))
+    if mid:
+        try:
+            bot.edit_message_text(_RULES_TEXT, cid, mid, reply_markup=mk)
+            return
+        except Exception:
+            pass
+    bot.send_message(cid, _RULES_TEXT, reply_markup=mk)
+
+
+# ─── service status ───────────────────────────────────────────────────────────
+
+def _show_service_status(cid: int, mid: int = None):
+    try:
+        all_uids     = db.get_all_user_ids()
+        all_servers  = [s for uid in all_uids for s in db.get_servers(uid)]
+        total        = len(all_servers)
+        running      = sum(1 for s in all_servers if s["status"] == "running")
+        docker_ok    = docker_mgr.is_available()
+        icon         = "🟢" if docker_ok else "🔴"
+        status_label = "Работает в штатном режиме" if docker_ok else "⚠️ Docker недоступен"
+
+        text = (
+            f"📊 <b>Статус сервиса VaultHost</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{icon} Платформа:      <b>{status_label}</b>\n"
+            f"🖥 Серверов всего: <b>{total}</b>\n"
+            f"▶️ Запущено:       <b>{running}</b>\n"
+            f"⏸ Остановлено:    <b>{total - running}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Данные актуальны на момент запроса</i>"
+        )
+    except Exception:
+        text = "📊 <b>Статус сервиса</b>\n\n❌ Не удалось получить данные."
+
+    mk = types.InlineKeyboardMarkup(row_width=1)
+    if TGWATCH_URL:
+        mk.add(types.InlineKeyboardButton("📡 Мониторинг TGWatch", url=TGWATCH_URL))
+    mk.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="service_status"))
+
+    if mid:
+        try:
+            bot.edit_message_text(text, cid, mid, reply_markup=mk)
+            return
+        except Exception:
+            pass
+    bot.send_message(cid, text, reply_markup=mk)
+
+
+# ─── server stats ─────────────────────────────────────────────────────────────
+
+def _do_server_stats(cid: int, uid: int, server_id: int):
+    srv = db.get_server(server_id)
+    if not srv or srv["user_id"] != uid:
+        bot.send_message(cid, "❌ Сервер не найден.")
+        return
+
+    if srv["status"] != "running" or not srv.get("container_id"):
+        bot.send_message(
+            cid,
+            "📊 <b>Статистика недоступна</b>\n\n"
+            "Сервер должен быть <b>запущен</b> для получения статистики.",
+        )
+        return
+
+    m = bot.send_message(cid, "⏳ <b>Получаю статистику…</b>")
+
+    def _run():
+        stats = docker_mgr.get_stats(srv["container_id"])
+        if not stats:
+            bot.edit_message_text(
+                "❌ Не удалось получить статистику контейнера.",
+                cid, m.message_id,
+            )
+            return
+
+        cpu   = stats.get("cpu_percent", 0)
+        mem   = stats.get("mem_mb", 0)
+        cpu_bar = _progress_bar(cpu, 100)
+        mem_bar = _progress_bar(mem, 50)
+
+        text = (
+            f"📊 <b>Статистика сервера — {srv['name']}</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡ CPU:  <b>{cpu}%</b> / 25%\n"
+            f"   {cpu_bar}\n\n"
+            f"💾 RAM:  <b>{mem} МБ</b> / 50 МБ\n"
+            f"   {mem_bar}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📁 Диск: /app (Docker Volume)\n"
+            f"🔒 Сеть: изолированная (без интернета)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Данные актуальны на момент запроса</i>"
+        )
+        mk = types.InlineKeyboardMarkup(row_width=2)
+        mk.add(
+            types.InlineKeyboardButton("🔄 Обновить", callback_data=f"s_stats_{server_id}"),
+            types.InlineKeyboardButton("◀️ Назад",    callback_data=f"s_manage_{server_id}"),
+        )
+        try:
+            bot.edit_message_text(text, cid, m.message_id, reply_markup=mk)
+        except Exception:
+            bot.send_message(cid, text, reply_markup=mk)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _progress_bar(value: float, max_val: float, length: int = 10) -> str:
+    filled = int(round((value / max_val) * length)) if max_val > 0 else 0
+    filled = max(0, min(filled, length))
+    return "█" * filled + "░" * (length - filled)
 
 
 # ─── universal text/document handler ─────────────────────────────────────────
@@ -750,10 +950,11 @@ def on_message(msg: types.Message):
 
     # ── Soft keyboard alias ───────────────────────────────────────────────────
     ALIASES = {
-        "🖥 Серверы":        "servers",
-        "➕ Создать сервер": "create",
-        "👤 Профиль":        "profile",
-        "ℹ️ Версия":         "version",
+        "🖥 Серверы":          "servers",
+        "➕ Создать сервер":   "create",
+        "👤 Профиль":          "profile",
+        "ℹ️ Версия":           "version",
+        "📊 Статус сервиса":   "service_status_cmd",
     }
     if text in ALIASES:
         msg.text = "/" + ALIASES[text]
@@ -761,6 +962,10 @@ def on_message(msg: types.Message):
         elif ALIASES[text] == "create":  cmd_create(msg)
         elif ALIASES[text] == "profile": cmd_profile(msg)
         elif ALIASES[text] == "version": cmd_version(msg)
+        elif ALIASES[text] == "service_status_cmd":
+            if _auth_guard(uid, cid):
+                return
+            _show_service_status(cid)
         return
 
     # ── State machine ─────────────────────────────────────────────────────────
@@ -1107,7 +1312,7 @@ def main():
     scheduler.start()
     logger.info("Планировщик кредитов запущен.")
 
-    logger.info("HostBot %s запускается…", BOT_VERSION)
+    logger.info("VaultHost %s запускается…", BOT_VERSION)
     bot.infinity_polling(timeout=60, long_polling_timeout=55)
 
 

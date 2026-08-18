@@ -300,7 +300,7 @@ class DockerManager:
 
         try:
             code, out = c.exec_run(
-                f"pip install {package} --no-cache-dir",
+                f"pip install {package} --no-cache-dir --target /app/.packages",
                 demux=True,
             )
             stdout = (out[0] or b"").decode(errors="replace")
@@ -314,6 +314,29 @@ class DockerManager:
             logger.exception("pip_install failed")
             return False, str(exc)
 
+    def get_stats(self, container_id: str) -> dict:
+        """Возвращает CPU% и RAM МБ работающего контейнера."""
+        if not DOCKER_AVAILABLE:
+            return {}
+        c = self._get(container_id)
+        if c is None:
+            return {}
+        try:
+            s            = c.stats(stream=False)
+            cpu_delta    = s["cpu_stats"]["cpu_usage"]["total_usage"] - s["precpu_stats"]["cpu_usage"]["total_usage"]
+            system_delta = s["cpu_stats"].get("system_cpu_usage", 0) - s["precpu_stats"].get("system_cpu_usage", 0)
+            num_cpus     = s["cpu_stats"].get("online_cpus", 1)
+            cpu_pct      = round((cpu_delta / system_delta) * num_cpus * 100.0, 1) if system_delta > 0 else 0.0
+            cache        = s["memory_stats"].get("stats", {}).get("cache", 0)
+            mem_usage    = max(0, s["memory_stats"].get("usage", 0) - cache)
+            mem_mb       = round(mem_usage / (1024 * 1024), 1)
+            return {"cpu_percent": cpu_pct, "mem_mb": mem_mb}
+        except Exception:
+            return {}
+
+    def is_available(self) -> bool:
+        return DOCKER_AVAILABLE
+
     def exec_command(self, container_id: str, cmd: str):
         """Выполнить произвольную команду в контейнере (для будущих расширений)."""
         if not DOCKER_AVAILABLE:
@@ -322,7 +345,11 @@ class DockerManager:
         if c is None:
             return False, "Контейнер не найден"
         try:
-            code, out = c.exec_run(cmd, demux=True)
+            code, out = c.exec_run(
+                cmd,
+                demux=True,
+                environment={"PYTHONPATH": "/app/.packages"},
+            )
             stdout = (out[0] or b"").decode(errors="replace")[-800:]
             stderr = (out[1] or b"").decode(errors="replace")[-400:]
             text = (stdout + stderr).strip()
