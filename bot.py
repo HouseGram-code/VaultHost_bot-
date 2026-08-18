@@ -21,7 +21,29 @@ from status_image import generate_server_stats, generate_service_status
 
 # ─── config ───────────────────────────────────────────────────────────────────
 
-BOT_TOKEN   = os.environ.get("BOT_TOKEN", "")
+def _load_dotenv():
+    """Читает .env рядом с bot.py (если есть). Переменные окружения имеют приоритет."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and not os.environ.get(key):
+                    os.environ[key] = val
+    except Exception:
+        pass
+
+
+_load_dotenv()
+
+BOT_TOKEN   = os.environ.get("BOT_TOKEN", "").strip()
 ADMIN_ID    = 5429363551
 TGWATCH_URL = os.environ.get("TGWATCH_URL", "")  # URL страницы статуса (опционально)
 BOT_VERSION = "1.0"
@@ -31,6 +53,15 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
 )
 logger = logging.getLogger("hostbot")
+
+if not BOT_TOKEN or ":" not in BOT_TOKEN:
+    raise SystemExit(
+        "\n❌ BOT_TOKEN не задан или задан неверно (нужен формат 123456:AA...).\n\n"
+        "Создайте файл .env рядом с bot.py:\n"
+        '    echo "BOT_TOKEN=123456:AA..." > .env\n\n'
+        "или передайте переменную напрямую:\n"
+        "    BOT_TOKEN=123456:AA... python3 bot.py\n"
+    )
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True)
 
@@ -1413,9 +1444,6 @@ def _deduct_credits():
 # ─── entry point ──────────────────────────────────────────────────────────────
 
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Переменная окружения BOT_TOKEN не задана!")
-
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(_deduct_credits, "interval", hours=1, id="credits")
     scheduler.start()
