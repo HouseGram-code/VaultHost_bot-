@@ -17,6 +17,7 @@ from telebot import types
 
 from database import db
 from docker_manager import docker_mgr
+from status_image import generate_server_stats, generate_service_status
 
 # ─── config ───────────────────────────────────────────────────────────────────
 
@@ -822,35 +823,30 @@ def _show_service_status(cid: int, mid: int = None):
         all_servers  = [s for uid in all_uids for s in db.get_servers(uid)]
         total        = len(all_servers)
         running      = sum(1 for s in all_servers if s["status"] == "running")
+        stopped      = total - running
         docker_ok    = docker_mgr.is_available()
-        icon         = "🟢" if docker_ok else "🔴"
-        status_label = "Работает в штатном режиме" if docker_ok else "⚠️ Docker недоступен"
 
-        text = (
-            f"📊 <b>Статус сервиса VaultHost</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{icon} Платформа:      <b>{status_label}</b>\n"
-            f"🖥 Серверов всего: <b>{total}</b>\n"
-            f"▶️ Запущено:       <b>{running}</b>\n"
-            f"⏸ Остановлено:    <b>{total - running}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>Данные актуальны на момент запроса</i>"
+        img_bytes = generate_service_status(
+            platform_ok=docker_ok,
+            total_servers=total,
+            running=running,
+            stopped=stopped,
         )
+        mk = types.InlineKeyboardMarkup(row_width=1)
+        if TGWATCH_URL:
+            mk.add(types.InlineKeyboardButton("📡 Мониторинг TGWatch", url=TGWATCH_URL))
+        mk.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="service_status"))
+
+        # Удаляем старое сообщение с текстом, если есть
+        if mid:
+            try:
+                bot.delete_message(cid, mid)
+            except Exception:
+                pass
+        bot.send_photo(cid, img_bytes, caption="📊 <b>Статус сервиса VaultHost</b>", parse_mode="HTML", reply_markup=mk)
     except Exception:
         text = "📊 <b>Статус сервиса</b>\n\n❌ Не удалось получить данные."
-
-    mk = types.InlineKeyboardMarkup(row_width=1)
-    if TGWATCH_URL:
-        mk.add(types.InlineKeyboardButton("📡 Мониторинг TGWatch", url=TGWATCH_URL))
-    mk.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="service_status"))
-
-    if mid:
-        try:
-            bot.edit_message_text(text, cid, mid, reply_markup=mk)
-            return
-        except Exception:
-            pass
-    bot.send_message(cid, text, reply_markup=mk)
+        bot.send_message(cid, text)
 
 
 # ─── server stats ─────────────────────────────────────────────────────────────
@@ -880,33 +876,32 @@ def _do_server_stats(cid: int, uid: int, server_id: int):
             )
             return
 
-        cpu   = stats.get("cpu_percent", 0)
-        mem   = stats.get("mem_mb", 0)
-        cpu_bar = _progress_bar(cpu, 100)
-        mem_bar = _progress_bar(mem, 50)
+        cpu = stats.get("cpu_percent", 0)
+        mem = stats.get("mem_mb", 0)
 
-        text = (
-            f"📊 <b>Статистика сервера — {srv['name']}</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ CPU:  <b>{cpu}%</b> / 25%\n"
-            f"   {cpu_bar}\n\n"
-            f"💾 RAM:  <b>{mem} МБ</b> / 50 МБ\n"
-            f"   {mem_bar}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📁 Диск: /app (Docker Volume)\n"
-            f"🔒 Сеть: изолированная (без интернета)\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<i>Данные актуальны на момент запроса</i>"
+        img_bytes = generate_server_stats(
+            server_name=srv["name"],
+            cpu_pct=cpu,
+            mem_mb=mem,
+            mem_limit=50,
+            cpu_limit=25,
         )
+
         mk = types.InlineKeyboardMarkup(row_width=2)
         mk.add(
             types.InlineKeyboardButton("🔄 Обновить", callback_data=f"s_stats_{server_id}"),
             types.InlineKeyboardButton("◀️ Назад",    callback_data=f"s_manage_{server_id}"),
         )
         try:
-            bot.edit_message_text(text, cid, m.message_id, reply_markup=mk)
+            bot.delete_message(cid, m.message_id)
         except Exception:
-            bot.send_message(cid, text, reply_markup=mk)
+            pass
+        bot.send_photo(
+            cid, img_bytes,
+            caption=f"📊 <b>{srv['name']}</b> — статистика",
+            parse_mode="HTML",
+            reply_markup=mk,
+        )
 
     threading.Thread(target=_run, daemon=True).start()
 

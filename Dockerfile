@@ -3,6 +3,7 @@ FROM python:3.11-slim
 # Системные зависимости (минимальный набор)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -12,7 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Исходный код
-COPY bot.py database.py docker_manager.py ./
+COPY bot.py database.py docker_manager.py status_image.py ./
 
 # Папка для БД
 RUN mkdir -p data
