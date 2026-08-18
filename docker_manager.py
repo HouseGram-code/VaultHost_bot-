@@ -53,11 +53,13 @@ class DockerManager:
             _client.networks.create(
                 net_name,
                 driver="bridge",
-                internal=True,          # нет выхода в интернет
+                # ВАЖНО: internal=False — иначе нет интернета:
+                # не работает pip install и Telegram-боты пользователей.
+                internal=False,
                 attachable=False,
                 options={
-                    "com.docker.network.bridge.enable_icc":           "false",  # нет связи между контейнерами
-                    "com.docker.network.bridge.enable_ip_masquerade": "false",
+                    # нет связи между контейнерами пользователей, но интернет есть
+                    "com.docker.network.bridge.enable_icc": "false",
                 },
                 labels={"hostbot.server_id": str(server_id)},
             )
@@ -113,18 +115,28 @@ class DockerManager:
                     command="tail -f /dev/null",
 
                     # ── ресурсы ──────────────────────────────────────────────
-                    mem_limit="50m",
-                    memswap_limit="50m",          # swap = 0 (memswap == mem_limit)
+                    mem_limit="256m",
+                    memswap_limit="256m",         # swap = 0 (memswap == mem_limit)
                     cpu_quota=25_000,
                     cpu_period=100_000,
-                    pids_limit=30,                # не более 30 процессов
+                    pids_limit=100,               # не более 100 процессов
 
                     # ── файловая система ─────────────────────────────────────
-                    read_only=True,               # корень только для чтения
+                    # read_only=False: pip install и питон-приложениям нужен
+                    # доступ на запись (site-packages, кэш, временные файлы).
+                    read_only=False,
                     volumes={vol: {"bind": "/app", "mode": "rw"}},
                     working_dir="/app",
                     tmpfs={
-                        "/tmp": "size=16m,mode=1777",  # /tmp в оперативке, 16 МБ
+                        "/tmp": "size=128m,mode=1777",  # /tmp в оперативке
+                    },
+                    environment={
+                        "PYTHONPATH":          "/app/.packages",
+                        "PYTHONUNBUFFERED":    "1",
+                        "PIP_CACHE_DIR":       "/tmp/pipcache",
+                        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+                        "HOME":                "/tmp",
+                        "TMPDIR":              "/tmp",
                     },
 
                     # ── сеть ─────────────────────────────────────────────────
@@ -138,8 +150,7 @@ class DockerManager:
                         "seccomp=unconfined",     # совместимость (можно заменить профилем)
                     ],
                     ulimits=[
-                        docker.types.Ulimit(name="nofile", soft=256, hard=512),
-                        docker.types.Ulimit(name="nproc",  soft=30,  hard=30),
+                        docker.types.Ulimit(name="nofile", soft=1024, hard=2048),
                     ],
 
                     # ── метаданные ───────────────────────────────────────────
@@ -273,12 +284,107 @@ class DockerManager:
             )
             code, out = c.exec_run(cmd, demux=True)
             if code == 0:
-                return True, "📦 ZIP успешно загружен и распакован в /app"
+                extra = self._auto_requirements(c)
+                return True, "📦 ZIP успешно загружен и распакован в /app" + extra
             stderr = (out[1] or b"").decode(errors="replace")[-400:]
             return False, f"Ошибка распаковки:\n<code>{stderr}</code>"
 
         except Exception as exc:
             logger.exception("upload_zip failed")
+            return False, str(exc)
+
+    def _auto_requirements(self, c) -> str:
+        """После распаковки ZIP автоматически ставит requirements.txt."""
+        try:
+            code, _ = c.exec_run("test -f /app/requirements.txt")
+            if code != 0:
+                return ""
+            code, out = c.exec_run(
+                "python3 -m pip install --no-input --disable-pip-version-check "
+                "--target /app/.packages -r /app/requirements.txt",
+                demux=True,
+                workdir="/app",
+                environment={
+                    "PYTHONPATH":    "/app/.packages",
+                    "PIP_CACHE_DIR": "/tmp/pipcache",
+                    "HOME":          "/tmp",
+                    "TMPDIR":        "/tmp",
+                },
+            )
+            if code == 0:
+                return "\n\n📥 <b>requirements.txt</b> установлен автоматически."
+            err = ((out[1] or b"") if out else b"").decode(errors="replace")[-300:]
+            return f"\n\n⚠️ requirements.txt не установился:\n<pre>{err}</pre>"
+        except Exception as exc:
+            return f"\n\n⚠️ requirements.txt: {exc}"
+
+    def list_files(self, container_id: str) -> list:
+        """Список .py файлов в /app (без .packages)."""
+        if not DOCKER_AVAILABLE:
+            return ["bot.py"]
+        c = self._get(container_id)
+        if c is None:
+            return []
+        try:
+            code, out = c.exec_run(
+                "find /app -maxdepth 2 -name '*.py' -not -path '*/.packages/*'",
+                demux=True,
+            )
+            text = ((out[0] or b"") if out else b"").decode(errors="replace")
+            return [l.strip() for l in text.splitlines() if l.strip()][:20]
+        except Exception:
+            return []
+
+    def run_script(self, container_id: str, script: str = None):
+        """Запускает python-скрипт в фоне, лог → /app/app.log."""
+        if not DOCKER_AVAILABLE:
+            return True, "✅ [симуляция] скрипт запущен"
+        c = self._get(container_id)
+        if c is None:
+            return False, "Контейнер не найден или не запущен"
+
+        if not script:
+            files = self.list_files(container_id)
+            for cand in ("/app/bot.py", "/app/main.py", "/app/app.py", "/app/run.py"):
+                if cand in files:
+                    script = cand
+                    break
+            if not script and files:
+                script = files[0]
+        if not script:
+            return False, "❌ Не найден ни один .py файл в /app. Загрузите ZIP."
+
+        safe = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./")
+        if not all(ch in safe for ch in script):
+            return False, "❌ Недопустимые символы в имени файла"
+
+        try:
+            c.exec_run("pkill -f 'python3 /app/' ", demux=True)
+        except Exception:
+            pass
+        try:
+            c.exec_run(
+                f"sh -c 'cd /app && nohup python3 -u {script} > /app/app.log 2>&1 &'",
+                detach=True,
+                environment={"PYTHONPATH": "/app/.packages", "PYTHONUNBUFFERED": "1", "HOME": "/tmp"},
+            )
+            return True, f"▶️ Запущен <code>{script}</code>\n\nЛоги: кнопка 📜 Логи"
+        except Exception as exc:
+            return False, str(exc)
+
+    def get_logs(self, container_id: str, lines: int = 40):
+        if not DOCKER_AVAILABLE:
+            return True, "[симуляция] логов нет"
+        c = self._get(container_id)
+        if c is None:
+            return False, "Контейнер не найден"
+        try:
+            code, out = c.exec_run(f"tail -n {lines} /app/app.log", demux=True)
+            text = ((out[0] or b"") if out else b"").decode(errors="replace")
+            err = ((out[1] or b"") if out else b"").decode(errors="replace")
+            body = (text + err).strip()
+            return True, body or "(лог пуст — скрипт ещё не запускался)"
+        except Exception as exc:
             return False, str(exc)
 
     def pip_install(self, container_id: str, package: str):
@@ -299,9 +405,20 @@ class DockerManager:
             return False, "❌ Недопустимые символы в имени пакета"
 
         try:
+            cmd = (
+                "python3 -m pip install --no-input --disable-pip-version-check "
+                f"--target /app/.packages --upgrade {package}"
+            )
             code, out = c.exec_run(
-                f"pip install {package} --no-cache-dir --target /app/.packages",
+                cmd,
                 demux=True,
+                workdir="/app",
+                environment={
+                    "PYTHONPATH":    "/app/.packages",
+                    "PIP_CACHE_DIR": "/tmp/pipcache",
+                    "HOME":          "/tmp",
+                    "TMPDIR":        "/tmp",
+                },
             )
             stdout = (out[0] or b"").decode(errors="replace")
             stderr = (out[1] or b"").decode(errors="replace")

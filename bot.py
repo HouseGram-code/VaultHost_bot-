@@ -185,6 +185,10 @@ def _kb_server_manage(server_id: int):
         types.InlineKeyboardButton("📦 Загрузить ZIP", callback_data=f"s_zip_{server_id}"),
         types.InlineKeyboardButton("📥 pip install",  callback_data=f"s_pip_{server_id}"),
     )
+    mk.add(
+        types.InlineKeyboardButton("▶️ Запустить бота", callback_data=f"s_run_{server_id}"),
+        types.InlineKeyboardButton("📜 Логи",           callback_data=f"s_logs_{server_id}"),
+    )
     mk.add(types.InlineKeyboardButton("◀️ К списку серверов", callback_data="s_list"))
     return mk
 
@@ -201,7 +205,7 @@ def _server_card(srv: dict) -> str:
         f"🆔 ID:      <code>{srv['id']}</code>\n"
         f"📅 Создан:  {str(srv['created_at'])[:10]}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💾 RAM:     50 МБ (лимит)\n"
+        f"💾 RAM:     256 МБ (лимит)\n"
         f"⚡ CPU:     0.25 vCPU\n"
         f"📁 Диск:    Docker Volume /app\n"
         f"━━━━━━━━━━━━━━━━━━━━━"
@@ -541,6 +545,18 @@ def on_callback(call: types.CallbackQuery):
         _set_state(uid, S_WAIT_ZIP, {"server_id": server_id})
         return
 
+    if data.startswith("s_run_"):
+        server_id = int(data.split("_")[-1])
+        bot.answer_callback_query(call.id, "⏳ Запускаю скрипт...")
+        _do_run_script(cid, uid, server_id)
+        return
+
+    if data.startswith("s_logs_"):
+        server_id = int(data.split("_")[-1])
+        bot.answer_callback_query(call.id, "⏳ Читаю логи...")
+        _do_logs(cid, uid, server_id)
+        return
+
     if data.startswith("s_pip_"):
         server_id = int(data.split("_")[-1])
         bot.answer_callback_query(call.id)
@@ -714,7 +730,7 @@ _FAQ = {
         "1️⃣ <b>Высокая нагрузка на платформу</b>\n"
         "   → Подождите 5–10 минут и попробуйте снова.\n\n"
         "2️⃣ <b>Ваш код потребляет много ресурсов</b>\n"
-        "   → Оптимизируйте код. Каждый сервер имеет лимит: <b>50 МБ RAM</b> и <b>0.25 vCPU</b>.\n\n"
+        "   → Оптимизируйте код. Каждый сервер имеет лимит: <b>256 МБ RAM</b> и <b>0.25 vCPU</b>.\n\n"
         "3️⃣ <b>Много одновременно запущенных серверов</b>\n"
         "   → Остановите неиспользуемые серверы.\n\n"
         "4️⃣ <b>Интенсивное использование диска</b>\n"
@@ -747,7 +763,7 @@ _RULES_TEXT = (
     "фишинговые скрипты и любой незаконный контент. "
     "Нарушение — <b>немедленная блокировка без предупреждения.</b>\n\n"
     "2️⃣  <b>Использование ресурсов</b>\n"
-    "⚡ Каждый сервер ограничен: <b>50 МБ RAM · 0.25 vCPU · 30 процессов.</b> "
+    "⚡ Каждый сервер ограничен: <b>256 МБ RAM · 0.25 vCPU · 100 процессов.</b> "
     "Запрещено намеренно нагружать платформу и использовать эксплойты для обхода лимитов. "
     "Нарушение — блокировка аккаунта.\n\n"
     "3️⃣  <b>Ответственность за код</b>\n"
@@ -845,8 +861,34 @@ def _show_service_status(cid: int, mid: int = None):
                 pass
         bot.send_photo(cid, img_bytes, caption="📊 <b>Статус сервиса VaultHost</b>", parse_mode="HTML", reply_markup=mk)
     except Exception:
-        text = "📊 <b>Статус сервиса</b>\n\n❌ Не удалось получить данные."
-        bot.send_message(cid, text)
+        # Картинка не сгенерировалась (нет Pillow / шрифта) — отдаём текстом,
+        # а не глухое "не удалось получить данные".
+        logger.exception("service status image failed")
+        try:
+            all_uids    = db.get_all_user_ids()
+            all_servers = [s for u in all_uids for s in db.get_servers(u)]
+            total       = len(all_servers)
+            running     = sum(1 for s in all_servers if s["status"] == "running")
+            stopped     = total - running
+            docker_ok   = docker_mgr.is_available()
+            util        = (running / total * 100) if total else 0
+            text = (
+                "📊 <b>Статус сервиса VaultHost</b>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚙️ Платформа:   {'🟢 Работает' if docker_ok else '🔴 Docker недоступен'}\n"
+                f"🖥 Всего серверов: <b>{total}</b>\n"
+                f"▶️ Запущено:    <b>{running}</b>\n"
+                f"⏹ Остановлено:  <b>{stopped}</b>\n"
+                f"📈 Загрузка:     <b>{util:.0f}%</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏷 Версия: VaultHost v{BOT_VERSION}"
+            )
+            mk = types.InlineKeyboardMarkup()
+            mk.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="service_status"))
+            bot.send_message(cid, text, reply_markup=mk)
+        except Exception as exc:
+            logger.exception("service status fallback failed")
+            bot.send_message(cid, f"📊 <b>Статус сервиса</b>\n\n❌ Ошибка: <code>{exc}</code>")
 
 
 # ─── server stats ─────────────────────────────────────────────────────────────
@@ -879,31 +921,103 @@ def _do_server_stats(cid: int, uid: int, server_id: int):
         cpu = stats.get("cpu_percent", 0)
         mem = stats.get("mem_mb", 0)
 
-        img_bytes = generate_server_stats(
-            server_name=srv["name"],
-            cpu_pct=cpu,
-            mem_mb=mem,
-            mem_limit=50,
-            cpu_limit=25,
-        )
-
         mk = types.InlineKeyboardMarkup(row_width=2)
         mk.add(
             types.InlineKeyboardButton("🔄 Обновить", callback_data=f"s_stats_{server_id}"),
             types.InlineKeyboardButton("◀️ Назад",    callback_data=f"s_manage_{server_id}"),
         )
+
         try:
-            bot.delete_message(cid, m.message_id)
+            img_bytes = generate_server_stats(
+                server_name=srv["name"],
+                cpu_pct=cpu,
+                mem_mb=mem,
+                mem_limit=256,
+                cpu_limit=25,
+            )
+            try:
+                bot.delete_message(cid, m.message_id)
+            except Exception:
+                pass
+            bot.send_photo(
+                cid, img_bytes,
+                caption=f"📊 <b>{srv['name']}</b> — статистика",
+                parse_mode="HTML",
+                reply_markup=mk,
+            )
         except Exception:
-            pass
-        bot.send_photo(
-            cid, img_bytes,
-            caption=f"📊 <b>{srv['name']}</b> — статистика",
-            parse_mode="HTML",
+            logger.exception("server stats image failed")
+            text = (
+                f"📊 <b>{srv['name']}</b> — статистика\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚡ CPU: {_progress_bar(cpu, 25)} {cpu:.1f}% / 25%\n"
+                f"💾 RAM: {_progress_bar(mem, 256)} {mem:.1f} / 256 МБ\n"
+                "━━━━━━━━━━━━━━━━━━━━━"
+            )
+            try:
+                bot.edit_message_text(text, cid, m.message_id, reply_markup=mk)
+            except Exception:
+                bot.send_message(cid, text, reply_markup=mk)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _do_run_script(cid: int, uid: int, server_id: int):
+    """Запускает загруженного бота пользователя внутри контейнера."""
+    srv = db.get_server(server_id)
+    if not srv or srv["user_id"] != uid:
+        bot.send_message(cid, "❌ Сервер не найден.")
+        return
+    if srv["status"] != "running" or not srv.get("container_id"):
+        bot.send_message(cid, "❌ Сначала нажмите <b>▶️ Запустить</b> сам сервер.")
+        return
+
+    m = bot.send_message(cid, "⏳ <b>Запускаю вашего бота…</b>")
+
+    def _run():
+        ok, res = docker_mgr.run_script(srv["container_id"])
+        mk = types.InlineKeyboardMarkup(row_width=2)
+        mk.add(
+            types.InlineKeyboardButton("📜 Логи",  callback_data=f"s_logs_{server_id}"),
+            types.InlineKeyboardButton("◀️ Назад", callback_data=f"s_manage_{server_id}"),
+        )
+        prefix = "✅" if ok else "❌"
+        try:
+            bot.edit_message_text(f"{prefix} {res}"[:3800], cid, m.message_id, reply_markup=mk)
+        except Exception:
+            bot.send_message(cid, f"{prefix} {res}"[:3800], reply_markup=mk)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _do_logs(cid: int, uid: int, server_id: int):
+    srv = db.get_server(server_id)
+    if not srv or srv["user_id"] != uid:
+        bot.send_message(cid, "❌ Сервер не найден.")
+        return
+    if not srv.get("container_id"):
+        bot.send_message(cid, "❌ Контейнер ещё не создан.")
+        return
+
+    def _run():
+        ok, res = docker_mgr.get_logs(srv["container_id"])
+        mk = types.InlineKeyboardMarkup(row_width=2)
+        mk.add(
+            types.InlineKeyboardButton("🔄 Обновить", callback_data=f"s_logs_{server_id}"),
+            types.InlineKeyboardButton("◀️ Назад",    callback_data=f"s_manage_{server_id}"),
+        )
+        body = res[-3000:] if ok else res
+        bot.send_message(
+            cid,
+            f"📜 <b>Логи — {srv['name']}</b>\n\n<pre>{_esc(body)}</pre>",
             reply_markup=mk,
         )
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _esc(t: str) -> str:
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _progress_bar(value: float, max_val: float, length: int = 10) -> str:
@@ -1187,7 +1301,7 @@ def _handle_wait_server_name(msg: types.Message, text: str):
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🖥 Имя:     <b>{text}</b>\n"
         f"📊 Статус:  🔴 Остановлен\n"
-        f"💾 Ресурсы: 50 МБ RAM · 0.25 vCPU\n"
+        f"💾 Ресурсы: 256 МБ RAM · 0.25 vCPU\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Нажмите <b>▶️ Запустить</b> в панели управления!",
         reply_markup=mk,

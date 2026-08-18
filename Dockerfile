@@ -4,6 +4,8 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
         fonts-dejavu-core \
+        fonts-dejavu-extra \
+    && fc-cache -f 2>/dev/null || true \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

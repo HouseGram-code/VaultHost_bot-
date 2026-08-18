@@ -62,7 +62,7 @@ docker compose down
 ### Ресурсы каждого **пользовательского** сервера
 | Параметр | Значение |
 |---|---|
-| RAM | 50 МБ (hard limit) |
+| RAM | 256 МБ (hard limit) |
 | CPU | 0.25 vCPU |
 | Диск | Docker Volume (хранится в `/var/lib/docker/volumes/hostbot_vol_<id>`) |
 | Образ | `python:3.11-slim` |

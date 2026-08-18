@@ -32,6 +32,22 @@ BAR_BG      = (35, 40, 60)
 
 # ─── fonts ─────────────────────────────────────────────────────────────────────
 
+_SEARCH_PATHS_REGULAR = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/local/share/fonts/DejaVuSans.ttf",
+    "C:\\Windows\\Fonts\\segoeui.ttf",
+    "C:\\Windows\\Fonts\\arial.ttf",
+]
+
+_SEARCH_PATHS_BOLD = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/local/share/fonts/DejaVuSans-Bold.ttf",
+    "C:\\Windows\\Fonts\\segoeuib.ttf",
+    "C:\\Windows\\Fonts\\arialbd.ttf",
+]
+
 _SEARCH_PATHS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -58,7 +74,7 @@ def _find_font(bold: bool = False) -> str:
         _font_cache[key] = str(local)
         return _font_cache[key]
 
-    for p in _SEARCH_PATHS:
+    for p in (_SEARCH_PATHS_BOLD if bold else _SEARCH_PATHS_REGULAR):
         if os.path.isfile(p):
             _font_cache[key] = p
             return _font_cache[key]
@@ -130,9 +146,16 @@ def _draw_gradient_top(img: Image.Image, height: int = 120):
         draw.line([(0, row), (w, row)], fill=(r, g, b))
 
 
-def _text_centered(draw: ImageDraw.ImageDraw, y, text, font, fill):
-    w, _ = draw.textbbox((0, 0), text, font=font)[2:4]
-    draw.text(((draw.im.width - w) // 2, y), text, fill=fill, font=font)
+def _text_centered(draw: ImageDraw.ImageDraw, y, text, font, fill, width: int = None):
+    """Рисует текст по центру. width — ширина изображения (обязательно для Pillow 10+)."""
+    if width is None:
+        try:
+            width = draw.im.size[0]
+        except Exception:
+            width = 520
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    draw.text(((width - w) // 2, y), text, fill=fill, font=font)
 
 
 def _text(draw: ImageDraw.ImageDraw, x, y, text, font, fill):
@@ -156,8 +179,8 @@ def generate_server_stats(
     _draw_gradient_top(img, 100)
 
     # Заголовок
-    _text_centered(draw, 18, "SERVER STATISTICS", _font(22, bold=True), WHITE)
-    _text_centered(draw, 48, f"{server_name}", _font(15), ACCENT_L)
+    _text_centered(draw, 18, "SERVER STATISTICS", _font(22, bold=True), WHITE, W)
+    _text_centered(draw, 48, f"{server_name}", _font(15), ACCENT_L, W)
 
     # Разделительная полоса
     draw.rectangle([30, 78, W - 30, 79], fill=BORDER)
@@ -169,15 +192,15 @@ def generate_server_stats(
     _text(draw, pad, y, "CPU", _font(14, bold=True), GRAY)
     cpu_usage = min(cpu_pct, cpu_limit)
     cpu_bar_pct = (cpu_usage / cpu_limit) * 100 if cpu_limit else 0
-    _draw_bar(draw, pad, y + 24, W - pad - 110, 14, cpu_bar_pct,
-              f"{cpu_pct:.1f}% / {cpu_limit}%")
+    _draw_bar(draw, pad, y + 24, W - pad - 190, 14, cpu_bar_pct,
+              f"{cpu_pct:.1f}% / {cpu_limit:.0f}%")
     y += 65
 
     # RAM
     _text(draw, pad, y, "RAM", _font(14, bold=True), GRAY)
     mem_pct = (mem_mb / mem_limit) * 100 if mem_limit else 0
-    _draw_bar(draw, pad, y + 24, W - pad - 110, 14, mem_pct,
-              f"{mem_mb:.1f} MB / {mem_limit} MB")
+    _draw_bar(draw, pad, y + 24, W - pad - 190, 14, mem_pct,
+              f"{mem_mb:.0f} / {mem_limit:.0f} MB")
     y += 65
 
     # Info
@@ -192,13 +215,13 @@ def generate_server_stats(
     _text(draw, pad + 80, y, "/app (Docker Volume)", info_font, GRAY)
     y += 24
     _text(draw, pad, y,      f"NETWORK", dim_font, DIM)
-    _text(draw, pad + 80, y, "Isolated (no internet)", info_font, GRAY)
+    _text(draw, pad + 80, y, "Isolated bridge + internet", info_font, GRAY)
     y += 24
     _text(draw, pad, y,      f"LIMITS",  dim_font, DIM)
-    _text(draw, pad + 80, y, f"50 MB RAM · 0.25 vCPU · 30 procs", info_font, GRAY)
+    _text(draw, pad + 80, y, f"{int(mem_limit)} MB RAM · {cpu_limit/100:.2f} vCPU", info_font, GRAY)
 
     # Watermark
-    _text_centered(draw, H - 28, "VaultHost", _font(11), DIM)
+    _text_centered(draw, H - 28, "VaultHost", _font(11), DIM, W)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -215,14 +238,14 @@ def generate_service_status(
     stopped: int,
     uptime_label: str = "Normal",
 ) -> bytes:
-    W, H = 520, 400
+    W, H = 520, 420
     img = Image.new("RGB", (W, H), BG_DARK)
     draw = ImageDraw.Draw(img)
     _draw_gradient_top(img, 100)
 
     # Заголовок
-    _text_centered(draw, 18, "VAULTHOST STATUS", _font(22, bold=True), WHITE)
-    _text_centered(draw, 48, "Platform Overview", _font(15), ACCENT_L)
+    _text_centered(draw, 18, "VAULTHOST STATUS", _font(22, bold=True), WHITE, W)
+    _text_centered(draw, 48, "Platform Overview", _font(15), ACCENT_L, W)
 
     draw.rectangle([30, 78, W - 30, 79], fill=BORDER)
 
@@ -278,11 +301,11 @@ def generate_service_status(
     # Version
     draw.rectangle([pad, y, W - pad, y + 1], fill=BORDER)
     y += 10
-    _text(draw, pad, y, "VERSION", _font(12), DIM)
-    _text(draw, pad + 110, y, "VaultHost v1.0", _font(12, bold=True), GRAY)
+    _text(draw, pad, y + 4, "VERSION", _font(12), DIM)
+    _text(draw, pad + 110, y + 4, "VaultHost v1.0", _font(12, bold=True), GRAY)
 
     # Watermark
-    _text_centered(draw, H - 28, "VaultHost", _font(11), DIM)
+    _text_centered(draw, H - 28, "VaultHost", _font(11), DIM, W)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)

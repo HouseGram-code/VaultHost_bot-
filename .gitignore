@@ -11,6 +11,15 @@ build/
 # Data (БД — не пушим)
 data/
 
+# Secrets
+.env
+
+# Temp / artifacts
+nul
+t1.png
+t2.png
+*.log
+
 # OS
 .DS_Store
 Thumbs.db
